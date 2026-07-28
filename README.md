@@ -1,40 +1,39 @@
-Below are the steps to get your plugin running. You can also find instructions at:
+# TypeCraft
 
-  https://www.figma.com/plugin-docs/plugin-quickstart-guide/
+TypeCraft is a Figma plugin that allows you to instantly build a full, ready-to-use text style system tailored to your design needs. Pick your desired fonts and target screen sizes, and TypeCraft will generate standard, labeled text styles right inside your Figma file.
 
-This plugin template uses Typescript and NPM, two standard tools in creating JavaScript applications.
+## Features
 
-First, download Node.js which comes with NPM. This will allow you to install TypeScript and other
-libraries. You can find the download link here:
+- **Font Selection**: Pick separate fonts for your Headings and Body text.
+- **Screen Size Optimization**: Generate typography styles tailored for **Mobile**, **Desktop**, or **Both**.
+- **Automated Text Styles**: If you select "Both", TypeCraft automatically creates distinct, clearly labeled text styles (e.g., `Mobile/Heading 1`, `Desktop/Heading 1`) allowing you to design responsively with ease.
 
-  https://nodejs.org/en/download/
+## How to Use
 
-Next, install TypeScript using the command:
+1. Open a Figma document and run the **TypeCraft** plugin.
+2. Select your desired **Heading font** and **Body font** from the dropdowns.
+3. Choose your target **Screen size** (Mobile, Desktop, or Both).
+4. Click **Generate Typography System**.
+5. Your new typography styles will immediately become available in your Figma file's local text styles!
 
-  npm install -g typescript
+## Development
 
-Finally, in the directory of your plugin, get the latest type definitions for the plugin API by running:
+This plugin template uses TypeScript and NPM. To modify or build the plugin locally:
 
-  npm install --save-dev @figma/plugin-typings
+1. Make sure you have [Node.js](https://nodejs.org/) installed.
+2. Clone or download this repository.
+3. Install dependencies by running:
+   ```bash
+   npm install
+   ```
+4. Compile the TypeScript files into JavaScript:
+   ```bash
+   npm run build
+   ```
+   *To automatically rebuild as you make changes, run `npm run watch`.*
 
-If you are familiar with JavaScript, TypeScript will look very familiar. In fact, valid JavaScript code
-is already valid Typescript code.
-
-TypeScript adds type annotations to variables. This allows code editors such as Visual Studio Code
-to provide information about the Figma API while you are writing code, as well as help catch bugs
-you previously didn't notice.
-
-For more information, visit https://www.typescriptlang.org/
-
-Using TypeScript requires a compiler to convert TypeScript (code.ts) into JavaScript (code.js)
-for the browser to run.
-
-We recommend writing TypeScript code using Visual Studio code:
-
-1. Download Visual Studio Code if you haven't already: https://code.visualstudio.com/.
-2. Open this directory in Visual Studio Code.
-3. Compile TypeScript to JavaScript: Run the "Terminal > Run Build Task..." menu item,
-    then select "npm: watch". You will have to do this again every time
-    you reopen Visual Studio Code.
-
-That's it! Visual Studio Code will regenerate the JavaScript file every time you save.
+### Setting up in Figma
+1. Open the Figma desktop app.
+2. Go to **Plugins** > **Development** > **Import plugin from manifest...**
+3. Select the `manifest.json` file in this directory.
+4. You can now run the plugin locally and test your changes!
