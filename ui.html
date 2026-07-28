@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    :root {
+      --blue: #18a0fb;
+      --border: #e6e6e6;
+      --text-muted: #8c8c8c;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      font-size: 12px;
+      color: #1a1a1a;
+      padding: 16px;
+    }
+
+    h1 {
+      font-size: 14px;
+      font-weight: 600;
+      margin: 0 0 4px 0;
+    }
+
+    p.subtitle {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin: 0 0 20px 0;
+      line-height: 1.5;
+    }
+
+    label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      margin-bottom: 6px;
+      margin-top: 16px;
+    }
+
+    select {
+      width: 100%;
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      font-size: 12px;
+      background: #fff;
+      color: #1a1a1a;
+    }
+
+    .segmented {
+      display: flex;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    .segmented button {
+      flex: 1;
+      padding: 16px 4px;
+      border: none;
+      background: #fff;
+      font-size: 11px;
+      cursor: pointer;
+      color: #1a1a1a;
+      border-right: 1px solid var(--border);
+    }
+
+    .segmented button:last-child {
+      border-right: none;
+    }
+
+    .segmented button.active {
+      background: var(--blue);
+      color: #fff;
+      font-weight: 600;
+    }
+
+    .generate-btn {
+      width: 100%;
+      margin-top: 24px;
+      padding: 16px;
+      background: var(--blue);
+      color: #fff;
+      border: none;
+      border-radius: 99px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .generate-btn:disabled {
+      background: #b3dcfb;
+      cursor: not-allowed;
+    }
+
+    .status {
+      margin-top: 12px;
+      font-size: 11px;
+      text-align: center;
+      min-height: 14px;
+    }
+
+    .status.success {
+      color: #1a8a4a;
+    }
+
+    .status.error {
+      color: #e04747;
+    }
+
+    .hint {
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-top: 4px;
+      line-height: 1.4;
+    }
+  </style>
+</head>
+
+<body>
+
+  <h1>TypeCraft</h1>
+  <p class="subtitle">Pick two fonts and a screen size we'll build a full, ready to use text style system for you.</p>
+
+  <label for="headingFont">Heading font</label>
+  <select id="headingFont"></select>
+
+  <label for="bodyFont">Body font</label>
+  <select id="bodyFont"></select>
+
+  <label>Screen size</label>
+  <div class="segmented" id="screenSizeToggle">
+    <button data-value="mobile">Mobile</button>
+    <button data-value="desktop">Desktop</button>
+    <button data-value="both" class="active">Both</button>
+  </div>
+  <div class="hint">"Both" creates a separate style set for each, clearly labeled (e.g. Mobile/Heading 1,
+    Desktop/Heading 1).</div>
+
+  <button class="generate-btn" id="generateBtn">Generate Typography System</button>
+  <div class="status" id="status"></div>
+
+  <script>
+    let selectedScreenSize = 'both';
+    let fontsLoaded = false;
+
+    const headingSelect = document.getElementById('headingFont');
+    const bodySelect = document.getElementById('bodyFont');
+    const generateBtn = document.getElementById('generateBtn');
+    const statusEl = document.getElementById('status');
+    const toggleButtons = document.querySelectorAll('#screenSizeToggle button');
+
+    toggleButtons.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        toggleButtons.forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        selectedScreenSize = btn.dataset.value;
+      });
+    });
+
+    function populateFonts(fonts) {
+      const preferredHeading = fonts.includes('Inter') ? 'Inter' : fonts[0];
+      const preferredBody = fonts.includes('Inter') ? 'Inter' : fonts[0];
+
+      [headingSelect, bodySelect].forEach((select) => {
+        select.innerHTML = '';
+        fonts.forEach((font) => {
+          const opt = document.createElement('option');
+          opt.value = font;
+          opt.textContent = font;
+          select.appendChild(opt);
+        });
+      });
+
+      headingSelect.value = preferredHeading;
+      bodySelect.value = preferredBody;
+      fontsLoaded = true;
+    }
+
+    generateBtn.addEventListener('click', () => {
+      if (!fontsLoaded) return;
+      statusEl.textContent = 'Generating…';
+      statusEl.className = 'status';
+      generateBtn.disabled = true;
+
+      parent.postMessage({
+        pluginMessage: {
+          type: 'generate',
+          headingFont: headingSelect.value,
+          bodyFont: bodySelect.value,
+          screenSize: selectedScreenSize,
+        }
+      }, '*');
+    });
+
+    window.onmessage = (event) => {
+      const msg = event.data.pluginMessage;
+      if (!msg) return;
+
+      if (msg.type === 'font-list') {
+        populateFonts(msg.fonts);
+      }
+
+      if (msg.type === 'generate-success') {
+        statusEl.textContent = `Created ${msg.count} text styles ✅`;
+        statusEl.className = 'status success';
+        generateBtn.disabled = false;
+      }
+
+      if (msg.type === 'generate-error') {
+        statusEl.textContent = 'Error: ' + msg.message;
+        statusEl.className = 'status error';
+        generateBtn.disabled = false;
+      }
+    };
+
+    // Ask the plugin thread for the list of available fonts on load
+    parent.postMessage({ pluginMessage: { type: 'get-fonts' } }, '*');
+  </script>
+
+</body>
+
+</html>
