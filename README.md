@@ -21,9 +21,10 @@ TypeCraft is a Figma plugin that builds a complete, customizable typography syst
 ## How to use
 
 1. Open a Figma Design file and run **TypeCraft**.
-2. Pick your fonts, turn on the screen sizes you need and adjust their scale.
-3. Edit the style list or load a preset, then check the preview.
-4. Click **Generate text styles**.
+2. Answer four simple questions: your **fonts**, which **screen sizes** you design for, how big the **headings** should be (Subtle, Balanced or Dramatic), and the **number of styles** (Essential, Standard or Expressive).
+3. Check the live preview, then click **Create Text Styles**.
+
+Everything else, such as editing individual styles, exact scale numbers, variable modes, naming and rounding, lives under **Advanced settings**. Click **Export Code** to get CSS or design tokens for developers.
 
 ## Development
 

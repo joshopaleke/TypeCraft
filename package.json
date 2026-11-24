@@ -1,6 +1,6 @@
 {
   "name": "TypeCraft",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Generate a customizable typography system as Figma text styles",
   "main": "code.js",
   "scripts": {
