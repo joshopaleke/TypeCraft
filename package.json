@@ -1,13 +1,12 @@
 {
   "name": "TypeCraft",
-  "version": "1.0.0",
-  "description": "Your Figma Plugin",
+  "version": "2.0.0",
+  "description": "Generate a customizable typography system as Figma text styles",
   "main": "code.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "watch": "npm run build -- --watch"
+    "check": "node --check code.js"
   },
   "author": "",
   "license": "",

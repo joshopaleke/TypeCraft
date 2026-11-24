@@ -1,250 +1,365 @@
 // ============================================================
 // TypeCraft code.js (Figma plugin main thread)
+//
+// All scale maths lives in ui.html so the preview, the code export and
+// the generated styles always match. This file only:
+//   1. sends the installed fonts + saved settings to the UI
+//   2. creates or updates text styles from the list the UI sends
+//   3. draws an optional documentation frame on the canvas
 // ============================================================
 
-figma.showUI(__html__, { width: 380, height: 580, themeColors: true });
+figma.showUI(__html__, { width: 440, height: 700, themeColors: true });
 
-// ---------- Font list for the UI dropdowns ----------
-async function sendFontList() {
+const SETTINGS_KEY = "typecraft-settings-v2";
+const DOC_MARKER = "typecraft-doc";
+
+// ---------- Startup: fonts + saved settings ----------
+async function sendInit() {
+    let fonts = {};
     try {
-        const fonts = await figma.listAvailableFontsAsync();
-        const families = Array.from(new Set(fonts.map((f) => f.fontName.family))).sort();
-        figma.ui.postMessage({ type: "font-list", fonts: families });
-    } catch (err) {
-        // Fallback list in case listAvailableFontsAsync fails
-        figma.ui.postMessage({
-            type: "font-list",
-            fonts: ["Inter", "Roboto", "Helvetica Neue", "Poppins", "Work Sans"],
-        });
+        const list = await figma.listAvailableFontsAsync();
+        for (const f of list) {
+            const fam = f.fontName.family;
+            if (!fonts[fam]) fonts[fam] = [];
+            fonts[fam].push(f.fontName.style);
+        }
+    } catch (_err) {
+        fonts = { Inter: ["Regular", "Medium", "Semi Bold", "Bold"] };
     }
-}
-sendFontList();
 
-// ---------- Typography scale settings ----------
-// A slightly gentler ratio for mobile keeps headings from feeling oversized
-// on small screens; desktop gets a bit more room to breathe.
-const SCALES = {
-    mobile: { base: 16, ratio: 1.2 },
-    desktop: { base: 16, ratio: 1.25 },
-};
-
-// step = how many "jumps" away from the 16px body size on the scale.
-// Fractional steps (0.5, -0.5) just give us one extra size between
-// body and the next full step, which is common in real type systems.
-const STYLE_DEFS = [
-    { name: "Display", step: 5, weight: "Bold", lineHeightPct: 110, category: "Heading" },
-    { name: "H1", step: 4, weight: "Bold", lineHeightPct: 115, category: "Heading" },
-    { name: "H2", step: 3, weight: "Bold", lineHeightPct: 120, category: "Heading" },
-    { name: "H3", step: 2, weight: "SemiBold", lineHeightPct: 125, category: "Heading" },
-    { name: "H4", step: 1, weight: "SemiBold", lineHeightPct: 130, category: "Heading" },
-    { name: "Large", step: 0.5, weight: "Regular", lineHeightPct: 150, category: "Body" },
-    { name: "Base", step: 0, weight: "Regular", lineHeightPct: 150, category: "Body" },
-    { name: "Small", step: -0.5, weight: "Regular", lineHeightPct: 145, category: "Body" },
-    { name: "Caption", step: -1, weight: "Regular", lineHeightPct: 140, category: "Body" },
-];
-
-function calcSize(base, ratio, step) {
-    const size = base * Math.pow(ratio, step);
-    return Math.round(size * 2) / 2; // round to nearest 0.5px for clean values
-}
-
-// Try the requested weight, then fall back gracefully so the plugin
-// never crashes on a font that doesn't have every weight installed.
-async function loadFontSafe(family, style) {
+    let settings = null;
     try {
-        await figma.loadFontAsync({ family, style });
-        return { family, style };
-    } catch (err) {
+        settings = await figma.clientStorage.getAsync(SETTINGS_KEY);
+    } catch (_err) {
+        settings = null;
+    }
+
+    figma.ui.postMessage({ type: "init", fonts, settings });
+}
+
+// ---------- Font loading with graceful fallbacks ----------
+// fontCache is per-run ("family|style" -> Promise<FontName>) so each run reports its own warnings.
+function loadFontSafe(family, style, warnings, fontCache) {
+    const key = family + "|" + style;
+    if (!fontCache.has(key)) {
+        fontCache.set(key, (async () => {
+            const candidates = [
+                { family, style },
+                { family, style: "Regular" },
+                { family: "Inter", style: "Regular" },
+            ];
+            for (const font of candidates) {
+                try {
+                    await figma.loadFontAsync(font);
+                    if (font.family !== family || font.style !== style) {
+                        warnings.push(`${family} ${style} → ${font.family} ${font.style}`);
+                    }
+                    return font;
+                } catch (_err) {
+                    // try next candidate
+                }
+            }
+            throw new Error(`Couldn't load ${family} ${style}`);
+        })());
+    }
+    return fontCache.get(key);
+}
+
+// ---------- Variables with a mode per screen ----------
+// Variable names can't contain "." "{" or "}".
+const varName = (name) => name.replace(/[.{}]/g, "-");
+
+async function setupVariables(styles, options) {
+    const platforms = options.platforms;
+    const collections = await figma.variables.getLocalVariableCollectionsAsync();
+    let collection = collections.find((c) => c.name === options.collectionName);
+    const isNew = !collection;
+    if (isNew) collection = figma.variables.createVariableCollection(options.collectionName);
+
+    // Find or create one mode per screen. A brand-new collection starts with
+    // a single "Mode 1", which we rename to the first screen.
+    const modeIds = {};
+    const untouchedDefault = collection.modes.length === 1 && collection.modes[0].name === "Mode 1";
+    if (isNew || untouchedDefault) {
+        collection.renameMode(collection.modes[0].modeId, platforms[0]);
+    }
+    for (const p of platforms) {
+        const existing = collection.modes.find((m) => m.name === p);
+        if (existing) {
+            modeIds[p] = existing.modeId;
+            continue;
+        }
         try {
-            await figma.loadFontAsync({ family, style: "Regular" });
-            return { family, style: "Regular" };
-        } catch (err2) {
-            await figma.loadFontAsync({ family: "Inter", style: "Regular" });
-            return { family: "Inter", style: "Regular" };
+            modeIds[p] = collection.addMode(p);
+        } catch (_err) {
+            if (isNew) collection.remove();
+            throw new Error(
+                `Couldn't add a "${p}" mode to the "${options.collectionName}" collection. ` +
+                "Your Figma plan may limit modes per collection: turn off some screens or choose \"Styles per screen\"."
+            );
         }
     }
-}
 
-// ---------- Generate native Figma Text Styles ----------
-async function generateStylesForPlatform(platform, headingFont, bodyFont) {
-    const { base, ratio } = SCALES[platform];
-    const platformLabel = platform === "mobile" ? "Mobile" : "Desktop";
-    const results = [];
+    const existingVars = (await figma.variables.getLocalVariablesAsync("FLOAT"))
+        .filter((v) => v.variableCollectionId === collection.id);
+    const byName = new Map(existingVars.map((v) => [v.name, v]));
+    let createdVars = 0;
 
-    for (const def of STYLE_DEFS) {
-        const fontFamily = def.category === "Heading" ? headingFont : bodyFont;
-        const loaded = await loadFontSafe(fontFamily, def.weight);
-        const fontSize = calcSize(base, ratio, def.step);
-        const lineHeightValue = Math.round(fontSize * (def.lineHeightPct / 100));
-
-        const styleName = `${platformLabel}/${def.category}/${def.name}`;
-
-        const textStyle = figma.createTextStyle();
-        textStyle.name = styleName;
-        textStyle.fontName = { family: loaded.family, style: loaded.style };
-        textStyle.fontSize = fontSize;
-        textStyle.lineHeight = { value: lineHeightValue, unit: "PIXELS" };
-
-        results.push({
-            name: styleName,
-            shortName: def.name,
-            family: loaded.family,
-            weight: loaded.style,
-            fontSize,
-            lineHeight: lineHeightValue,
-            category: def.category,
-            platform: platformLabel,
-        });
+    function upsert(name, scopes, codeSyntax, valueFor) {
+        let v = byName.get(name);
+        if (!v) {
+            v = figma.variables.createVariable(name, collection, "FLOAT");
+            byName.set(name, v);
+            createdVars++;
+        }
+        v.scopes = scopes;
+        v.setVariableCodeSyntax("WEB", codeSyntax);
+        for (const p of platforms) v.setValueForMode(modeIds[p], valueFor(p));
+        return v;
     }
 
-    return results;
+    const bindings = new Map(); // style name -> { fontSize, lineHeight }
+    for (const s of styles) {
+        const base = varName(s.name);
+        const fontSize = upsert(`${base}/font-size`, ["FONT_SIZE"], `var(${s.cssToken}-size)`, (p) => s.values[p].fontSize);
+        const lineHeight = options.bindLineHeight
+            ? upsert(`${base}/line-height`, ["LINE_HEIGHT"], `var(${s.cssToken}-line-height)`, (p) => s.values[p].lineHeightPx)
+            : null;
+        bindings.set(s.name, { fontSize, lineHeight });
+    }
+
+    return { collection, modeIds, bindings, createdVars, totalVars: bindings.size * (options.bindLineHeight ? 2 : 1) };
 }
 
-// ---------- Build the on-canvas documentation frame ----------
-async function createDocFrame(allStyles, platforms) {
-    await figma.loadFontAsync({ family: "Inter", style: "Bold" });
-    await figma.loadFontAsync({ family: "Inter", style: "Regular" });
+// ---------- Create / update text styles ----------
+async function applyStyles(styles, options, warnings, vars) {
+    const byName = new Map();
+    if (options.updateExisting) {
+        const existing = await figma.getLocalTextStylesAsync();
+        for (const s of existing) byName.set(s.name, s);
+    }
 
-    const frame = figma.createFrame();
-    frame.name = "Typography System";
-    frame.layoutMode = "VERTICAL";
-    frame.primaryAxisSizingMode = "AUTO";
-    frame.counterAxisSizingMode = "AUTO";
-    frame.paddingTop = 56;
-    frame.paddingBottom = 56;
-    frame.paddingLeft = 56;
-    frame.paddingRight = 56;
-    frame.itemSpacing = 40;
+    const fontCache = new Map();
+    let created = 0;
+    let updated = 0;
+    const results = [];
+
+    for (const s of styles) {
+        const font = await loadFontSafe(s.family, s.style, warnings, fontCache);
+
+        let textStyle = byName.get(s.name);
+        if (textStyle) {
+            // The style's current font must be loaded before it can be edited.
+            try {
+                await figma.loadFontAsync(textStyle.fontName);
+            } catch (_err) {
+                // Missing font: setting fontName below still replaces it.
+            }
+            updated++;
+        } else {
+            textStyle = figma.createTextStyle();
+            textStyle.name = s.name;
+            byName.set(s.name, textStyle);
+            created++;
+        }
+
+        textStyle.fontName = font;
+        textStyle.fontSize = s.fontSize;
+        textStyle.lineHeight = s.lineHeight;
+        textStyle.letterSpacing = s.letterSpacing;
+
+        const bound = textStyle.boundVariables || {};
+        const binding = vars ? vars.bindings.get(s.name) : null;
+        if (binding) {
+            textStyle.setBoundVariable("fontSize", binding.fontSize);
+            if (binding.lineHeight) textStyle.setBoundVariable("lineHeight", binding.lineHeight);
+            else if (bound.lineHeight) textStyle.setBoundVariable("lineHeight", null);
+            const sizes = options.platforms.map((p) => `${p} ${s.values[p].fontSize}px`).join(", ");
+            textStyle.description = `${sizes}. Sizes come from the "${options.collectionName}" variables. Generated by TypeCraft`;
+        } else {
+            // Re-running in "styles per screen" mode: drop bindings from an earlier variables run.
+            if (bound.fontSize) textStyle.setBoundVariable("fontSize", null);
+            if (bound.lineHeight) textStyle.setBoundVariable("lineHeight", null);
+            textStyle.description = `${s.fontSize}px / ${s.lineHeight.unit === "PIXELS" ? s.lineHeight.value + "px" : s.lineHeight.value + "%"}, generated by TypeCraft`;
+        }
+
+        results.push(Object.assign({}, s, { font, styleId: textStyle.id }));
+    }
+
+    return { created, updated, results };
+}
+
+// ---------- Documentation frame ----------
+function makeAutoLayout(name, direction, spacing) {
+    const f = figma.createFrame();
+    f.name = name;
+    f.layoutMode = direction;
+    f.primaryAxisSizingMode = "AUTO";
+    f.counterAxisSizingMode = "AUTO";
+    f.itemSpacing = spacing;
+    f.fills = [];
+    return f;
+}
+
+function makeLabel(text, size, style, gray) {
+    const t = figma.createText();
+    t.fontName = { family: "Inter", style };
+    t.fontSize = size;
+    t.characters = text;
+    t.fills = [{ type: "SOLID", color: { r: gray, g: gray, b: gray } }];
+    return t;
+}
+
+async function createDocFrame(results, sampleText, vars) {
+    await Promise.all([
+        figma.loadFontAsync({ family: "Inter", style: "Bold" }),
+        figma.loadFontAsync({ family: "Inter", style: "Regular" }),
+    ]);
+
+    // Replace a frame from a previous run instead of piling up copies.
+    let position = null;
+    for (const node of figma.currentPage.children) {
+        if (node.getPluginData(DOC_MARKER) === "1") {
+            if (!position) position = { x: node.x, y: node.y };
+            node.remove();
+        }
+    }
+
+    const frame = makeAutoLayout("Typography System", "VERTICAL", 48);
+    frame.setPluginData(DOC_MARKER, "1");
+    frame.paddingTop = frame.paddingBottom = frame.paddingLeft = frame.paddingRight = 56;
     frame.fills = [{ type: "SOLID", color: { r: 1, g: 1, b: 1 } }];
     frame.cornerRadius = 8;
+    frame.appendChild(makeLabel("Typography System", 28, "Bold", 0.1));
 
-    const title = figma.createText();
-    title.fontName = { family: "Inter", style: "Bold" };
-    title.characters = "Typography System";
-    title.fontSize = 28;
-    frame.appendChild(title);
+    const platforms = [];
+    for (const r of results) if (platforms.indexOf(r.platform) === -1) platforms.push(r.platform);
 
     for (const platform of platforms) {
-        const platformLabel = platform === "mobile" ? "Mobile" : "Desktop";
+        const section = makeAutoLayout(platform, "VERTICAL", 24);
+        if (vars) {
+            // Same styles in every section; the section's variable mode sets the sizes.
+            section.setExplicitVariableModeForCollection(vars.collection, vars.modeIds[platform]);
+        }
+        section.appendChild(makeLabel(vars ? `${platform} mode` : `${platform} styles`, 16, "Bold", 0.35));
 
-        const section = figma.createFrame();
-        section.name = platformLabel;
-        section.layoutMode = "VERTICAL";
-        section.primaryAxisSizingMode = "AUTO";
-        section.counterAxisSizingMode = "AUTO";
-        section.itemSpacing = 20;
-        section.fills = [];
-
-        const sectionTitle = figma.createText();
-        sectionTitle.fontName = { family: "Inter", style: "Bold" };
-        sectionTitle.characters = `${platformLabel} Styles`;
-        sectionTitle.fontSize = 16;
-        sectionTitle.fills = [{ type: "SOLID", color: { r: 0.35, g: 0.35, b: 0.35 } }];
-        section.appendChild(sectionTitle);
-
-        const platformStyles = allStyles.filter((s) => s.platform === platformLabel);
-        const categories = ["Heading", "Body"];
+        const platformStyles = results.filter((r) => r.platform === platform);
+        const categories = [];
+        for (const r of platformStyles) if (categories.indexOf(r.category) === -1) categories.push(r.category);
 
         for (const category of categories) {
-            const categoryStyles = platformStyles.filter((s) => s.category === category);
-            if (categoryStyles.length === 0) continue;
+            const group = makeAutoLayout(category, "VERTICAL", 0);
+            group.appendChild(makeLabel(category.toUpperCase(), 11, "Bold", 0.6));
 
-            const categoryGroup = figma.createFrame();
-            categoryGroup.name = category;
-            categoryGroup.layoutMode = "VERTICAL";
-            categoryGroup.primaryAxisSizingMode = "AUTO";
-            categoryGroup.counterAxisSizingMode = "AUTO";
-            categoryGroup.itemSpacing = 4;
-            categoryGroup.fills = [];
-
-            const categoryLabel = figma.createText();
-            categoryLabel.fontName = { family: "Inter", style: "Bold" };
-            categoryLabel.characters = category;
-            categoryLabel.fontSize = 11;
-            categoryLabel.fills = [{ type: "SOLID", color: { r: 0.65, g: 0.65, b: 0.65 } }];
-            categoryLabel.textAutoResize = "WIDTH_AND_HEIGHT";
-            categoryGroup.appendChild(categoryLabel);
-
-            for (const s of categoryStyles) {
-                const row = figma.createFrame();
-                row.name = s.shortName;
-                row.layoutMode = "HORIZONTAL";
-                row.primaryAxisSizingMode = "AUTO";
-                row.counterAxisSizingMode = "AUTO";
+            for (const s of platformStyles.filter((r) => r.category === category)) {
+                const row = makeAutoLayout(s.shortName, "HORIZONTAL", 32);
                 row.counterAxisAlignItems = "CENTER";
-                row.itemSpacing = 32;
-                row.paddingTop = 16;
-                row.paddingBottom = 16;
-                row.fills = [];
+                row.paddingTop = row.paddingBottom = 16;
 
-                // Sample text rendered in the actual generated style
                 const sample = figma.createText();
-                await figma.loadFontAsync({ family: s.family, style: s.weight });
-                sample.fontName = { family: s.family, style: s.weight };
-                sample.fontSize = s.fontSize;
-                sample.lineHeight = { value: s.lineHeight, unit: "PIXELS" };
-                sample.textAutoResize = "WIDTH_AND_HEIGHT";
-                sample.characters = "The quick brown fox";
+                sample.fontName = s.font;
+                sample.characters = s.role === "mono" ? "const size = scale(step);" : sampleText;
+                await sample.setTextStyleIdAsync(s.styleId); // linked, so edits to the style show up here
 
-                // Metadata label: full style path, family, weight, size/line-height
-                const meta = figma.createText();
-                meta.fontName = { family: "Inter", style: "Regular" };
-                meta.fontSize = 12;
-                meta.fills = [{ type: "SOLID", color: { r: 0.5, g: 0.5, b: 0.5 } }];
-                meta.textAutoResize = "WIDTH_AND_HEIGHT";
-                meta.characters = `${s.name}  •  ${s.family} ${s.weight}  •  ${s.fontSize}px / ${s.lineHeight}px`;
+                const meta = makeLabel(
+                    `${s.name}\n${s.font.family} ${s.font.style}  •  ${s.fontSize}px / ${s.lineHeightPx}px` +
+                    (s.letterSpacing.value ? `  •  ${s.letterSpacing.value}%` : ""),
+                    11, "Regular", 0.5
+                );
+                meta.lineHeight = { value: 160, unit: "PERCENT" };
 
                 row.appendChild(sample);
                 row.appendChild(meta);
-                categoryGroup.appendChild(row);
+                group.appendChild(row);
 
-                // Thin divider under each row
                 const divider = figma.createRectangle();
-                divider.resize(600, 1);
-                divider.fills = [{ type: "SOLID", color: { r: 0.9, g: 0.9, b: 0.9 } }];
-                categoryGroup.appendChild(divider);
+                divider.name = "Divider";
+                divider.resize(100, 1);
+                divider.fills = [{ type: "SOLID", color: { r: 0.92, g: 0.92, b: 0.92 } }];
+                group.appendChild(divider);
+                divider.layoutAlign = "STRETCH";
             }
-
-            section.appendChild(categoryGroup);
+            section.appendChild(group);
         }
-
         frame.appendChild(section);
     }
 
     figma.currentPage.appendChild(frame);
-    frame.x = figma.viewport.center.x - frame.width / 2;
-    frame.y = figma.viewport.center.y - frame.height / 2;
+
+    if (position) {
+        frame.x = position.x;
+        frame.y = position.y;
+    } else {
+        // Place it to the right of everything on the page so nothing overlaps.
+        let maxX = null;
+        let minY = null;
+        for (const node of figma.currentPage.children) {
+            if (node === frame) continue;
+            maxX = Math.max(maxX === null ? -Infinity : maxX, node.x + node.width);
+            minY = Math.min(minY === null ? Infinity : minY, node.y);
+        }
+        frame.x = maxX === null ? Math.round(figma.viewport.center.x - frame.width / 2) : Math.round(maxX + 200);
+        frame.y = minY === null ? Math.round(figma.viewport.center.y - frame.height / 2) : Math.round(minY);
+    }
 
     return frame;
 }
 
 // ---------- Message handling ----------
 figma.ui.onmessage = async (msg) => {
-    if (msg.type === "get-fonts") {
-        sendFontList();
+    if (msg.type === "ready") {
+        await sendInit();
+        return;
+    }
+
+    if (msg.type === "save-settings") {
+        try {
+            await figma.clientStorage.setAsync(SETTINGS_KEY, msg.settings);
+        } catch (_err) {
+            // Settings are a convenience; never fail on them.
+        }
         return;
     }
 
     if (msg.type === "generate") {
-        const { headingFont, bodyFont, screenSize } = msg;
-
+        const warnings = [];
         try {
-            const platforms = screenSize === "both" ? ["mobile", "desktop"] : [screenSize];
-            let allStyles = [];
+            const useVars = msg.options.responsive === "variables";
+            const vars = useVars ? await setupVariables(msg.styles, msg.options) : null;
+            const { created, updated, results } = await applyStyles(msg.styles, msg.options, warnings, vars);
 
-            for (const platform of platforms) {
-                const styles = await generateStylesForPlatform(platform, headingFont, bodyFont);
-                allStyles = allStyles.concat(styles);
+            if (msg.options.docFrame) {
+                // In variables mode, show every style once per mode with that mode's sizes.
+                const docResults = useVars
+                    ? msg.options.platforms.reduce((all, p) => all.concat(results.map((r) => Object.assign({}, r, {
+                        platform: p,
+                        fontSize: r.values[p].fontSize,
+                        lineHeightPx: r.values[p].lineHeightPx,
+                    }))), [])
+                    : results;
+                const frame = await createDocFrame(docResults, msg.options.sampleText, vars);
+                figma.viewport.scrollAndZoomIntoView([frame]);
             }
 
-            const frame = await createDocFrame(allStyles, platforms);
-            figma.viewport.scrollAndZoomIntoView([frame]);
+            const uniqueWarnings = Array.from(new Set(warnings));
+            const variables = vars ? {
+                collection: msg.options.collectionName,
+                modes: msg.options.platforms.length,
+                created: vars.createdVars,
+                total: vars.totalVars,
+            } : null;
+            figma.ui.postMessage({ type: "generate-done", created, updated, warnings: uniqueWarnings, variables });
 
-            figma.ui.postMessage({ type: "generate-success", count: allStyles.length });
-            figma.notify(`Created ${allStyles.length} text styles ✅`);
+            const parts = [];
+            if (created) parts.push(`created ${created}`);
+            if (updated) parts.push(`updated ${updated}`);
+            let note = `TypeCraft: ${parts.join(", ")} text styles`;
+            if (variables) note += ` + ${variables.total} variables (${variables.modes} modes)`;
+            figma.notify(note);
         } catch (err) {
-            figma.ui.postMessage({ type: "generate-error", message: err.message });
-            figma.notify("Something went wrong: " + err.message, { error: true });
+            const message = err && err.message ? err.message : String(err);
+            figma.ui.postMessage({ type: "generate-error", message });
+            figma.notify("Something went wrong: " + message, { error: true });
         }
         return;
     }
